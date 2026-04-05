@@ -11,35 +11,65 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSandboxActive, setIsSandboxActive] = useState(true);
   const [targetDomain, setTargetDomain] = useState('rh420.xyz');
+  const [targetHistory, setTargetHistory] = useState<string[]>(['rh420.xyz']);
   const [isTargetLocked, setIsTargetLocked] = useState(false);
   const [sandboxOutput, setSandboxOutput] = useState<{ code: string; output: string; type: 'js' | 'python' | 'error' } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Persistence: Load messages from localStorage on mount
+  // Persistence: Load targets and current session on mount
   useEffect(() => {
-    const savedMessages = localStorage.getItem('nightfury_session_v1');
+    const savedTargets = localStorage.getItem('nightfury_targets_v1');
+    const lastTarget = localStorage.getItem('nightfury_last_target_v1');
+    
+    if (savedTargets) {
+      try {
+        const targets = JSON.parse(savedTargets);
+        setTargetHistory(targets);
+        if (lastTarget && targets.includes(lastTarget)) {
+          setTargetDomain(lastTarget);
+          loadSession(lastTarget);
+        } else {
+          loadSession(targets[0]);
+        }
+      } catch (e) {
+        console.error('Failed to parse saved targets:', e);
+      }
+    } else {
+      initializeRecon('rh420.xyz');
+    }
+  }, []);
+
+  // Persistence: Save current session whenever messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem(`nightfury_session_${targetDomain}`, JSON.stringify(messages));
+    }
+  }, [messages, targetDomain]);
+
+  // Persistence: Save targets list
+  useEffect(() => {
+    localStorage.setItem('nightfury_targets_v1', JSON.stringify(targetHistory));
+  }, [targetHistory]);
+
+  const loadSession = (domain: string) => {
+    const savedMessages = localStorage.getItem(`nightfury_session_${domain}`);
     if (savedMessages) {
       try {
         setMessages(JSON.parse(savedMessages));
       } catch (e) {
-        console.error('Failed to parse saved session:', e);
+        console.error(`Failed to parse session for ${domain}:`, e);
+        initializeRecon(domain);
       }
     } else {
-      // If no saved session, run initial recon
-      initializeRecon();
+      initializeRecon(domain);
     }
-  }, []);
+  };
 
-  // Persistence: Save messages to localStorage whenever they change
-  useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem('nightfury_session_v1', JSON.stringify(messages));
-    }
-  }, [messages]);
-
-  const initializeRecon = async () => {
+  const initializeRecon = async (domain: string) => {
     setIsLoading(true);
     setIsTargetLocked(true);
+    setTargetDomain(domain);
+    localStorage.setItem('nightfury_last_target_v1', domain);
     
     const initialMessage: Message = { 
       role: 'model', 
@@ -50,13 +80,32 @@ export default function ChatInterface() {
     setMessages([initialMessage]);
 
     try {
-      await processStream(`Perform an initial reconnaissance analysis on the domain ${targetDomain}. Focus on DNS records, potential subdomains, and common backend vulnerabilities for a .xyz domain. Provide a summary of attack vectors to explore.`);
+      await processStream(`Perform an initial reconnaissance analysis on the domain ${domain}. Focus on DNS records, potential subdomains, and common backend vulnerabilities for a .xyz domain. Provide a summary of attack vectors to explore.`, domain);
     } catch (error) {
       console.error('Error initializing recon:', error);
     } finally {
       setIsLoading(false);
       setTimeout(() => setIsTargetLocked(false), 3000);
     }
+  };
+
+  const addNewTarget = () => {
+    const newDomain = window.prompt('Enter new target domain (e.g., example.com):');
+    if (newDomain && !targetHistory.includes(newDomain)) {
+      setTargetHistory(prev => [...prev, newDomain]);
+      setTargetDomain(newDomain);
+      setMessages([]);
+      initializeRecon(newDomain);
+    } else if (newDomain && targetHistory.includes(newDomain)) {
+      switchTarget(newDomain);
+    }
+  };
+
+  const switchTarget = (domain: string) => {
+    if (domain === targetDomain) return;
+    setTargetDomain(domain);
+    localStorage.setItem('nightfury_last_target_v1', domain);
+    loadSession(domain);
   };
 
   const triggerLiveScan = async () => {
@@ -82,7 +131,7 @@ export default function ChatInterface() {
     setMessages(prev => [...prev, modelMessage]);
 
     try {
-      await processStream(scanPrompt);
+      await processStream(scanPrompt, targetDomain);
     } catch (error) {
       console.error('Error during live scan:', error);
     } finally {
@@ -112,7 +161,7 @@ export default function ChatInterface() {
     setMessages(prev => [...prev, modelMessage]);
 
     try {
-      await processStream(scanPrompt);
+      await processStream(scanPrompt, targetDomain);
     } catch (error) {
       console.error('Error during deep tool scan:', error);
     } finally {
@@ -120,12 +169,12 @@ export default function ChatInterface() {
     }
   };
 
-  const processStream = async (prompt: string) => {
+  const processStream = async (prompt: string, domain: string = targetDomain) => {
     let fullText = '';
     let groundingMetadata = null;
     let currentSteps: CodeExecutionStep[] = [];
     
-    const stream = streamNightfuryResponse(prompt);
+    const stream = streamNightfuryResponse(prompt, domain);
     
     for await (const chunk of stream) {
       const parts = chunk.candidates?.[0]?.content?.parts;
@@ -164,10 +213,10 @@ export default function ChatInterface() {
   };
 
   const clearSession = () => {
-    if (window.confirm('Are you sure you want to terminate the current session and clear all logs?')) {
-      localStorage.removeItem('nightfury_session_v1');
+    if (window.confirm(`Are you sure you want to terminate the current session for ${targetDomain} and clear all logs?`)) {
+      localStorage.removeItem(`nightfury_session_${targetDomain}`);
       setMessages([]);
-      initializeRecon();
+      initializeRecon(targetDomain);
     }
   };
 
@@ -235,7 +284,7 @@ export default function ChatInterface() {
     setMessages(prev => [...prev, modelMessage]);
 
     try {
-      await processStream(input);
+      await processStream(input, targetDomain);
     } catch (error) {
       console.error('Error streaming response:', error);
       setMessages(prev => [
@@ -288,9 +337,25 @@ export default function ChatInterface() {
               )}>
                 <Box className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> SANDBOX_{isSandboxActive ? "ON" : "OFF"}
               </span>
-              <span className="flex items-center gap-1 text-[#00ff41]/80 border-l border-[#1a1a1a] pl-2 ml-1 sm:ml-2">
-                <Search className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> {targetDomain}
-              </span>
+              <div className="flex items-center gap-1 text-[#00ff41]/80 border-l border-[#1a1a1a] pl-2 ml-1 sm:ml-2">
+                <Search className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                <select 
+                  value={targetDomain}
+                  onChange={(e) => switchTarget(e.target.value)}
+                  className="bg-transparent border-none focus:ring-0 cursor-pointer text-[#00ff41] font-bold outline-none"
+                >
+                  {targetHistory.map(domain => (
+                    <option key={domain} value={domain} className="bg-[#0a0a0a] text-[#00ff41]">{domain}</option>
+                  ))}
+                </select>
+                <button 
+                  onClick={addNewTarget}
+                  className="ml-1 p-0.5 hover:bg-[#00ff41]/20 rounded transition-colors"
+                  title="Add New Target"
+                >
+                  <Maximize2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 rotate-45" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
