@@ -247,6 +247,36 @@ export default function ChatInterface() {
     }
   };
 
+  const triggerDeployRat = async () => {
+    if (isLoading) return;
+    
+    const ratPrompt = `DEPLOY_NIGHTFURY_RAT: Deploy the NIGHTFURY RAT v3+v8 on the target ${targetDomain}. 
+    1. Generate the deployment script based on the RAT architecture.
+    2. Simulate the persistence and financial vector testing.
+    3. Exfiltrate initial findings to the C2 server at 172.28.29.129:4444.
+    4. Provide a summary of the RAT's operational status.`;
+
+    const userMessage: Message = { role: 'user', text: `[SYSTEM_COMMAND] DEPLOY_RAT --target ${targetDomain}` };
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+
+    const modelMessage: Message = { 
+      role: 'model', 
+      text: '', 
+      isThinking: true,
+      codeExecutionSteps: [] 
+    };
+    setMessages(prev => [...prev, modelMessage]);
+
+    try {
+      await processStream(ratPrompt, targetDomain);
+    } catch (error) {
+      console.error('Error during RAT deployment:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const triggerPageScrape = async () => {
     if (isLoading) return;
     
@@ -415,6 +445,7 @@ export default function ChatInterface() {
   const RECON_COMMANDS = [
     'INITIATE_LIVE_SCAN',
     'INITIATE_DEEP_TOOL_SCAN',
+    'DEPLOY_RAT',
     'SCRAPE_PAGE --url',
     'THREAT_INTELLIGENCE_QUERY',
     'DNS_RECON',
@@ -585,6 +616,13 @@ export default function ChatInterface() {
           >
             {isIntelLoading ? <Loader2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 animate-spin" /> : <Activity className="w-2.5 h-2.5 sm:w-3 sm:h-3" />}
             <span className="hidden xs:inline">Threat Intel</span><span className="xs:hidden">Intel</span>
+          </button>
+          <button 
+            onClick={triggerDeployRat}
+            disabled={isLoading}
+            className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-purple-500/10 border border-purple-500/30 text-purple-500 rounded hover:bg-purple-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
+          >
+            <Zap className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">Deploy RAT</span><span className="xs:hidden">RAT</span>
           </button>
           <button 
             onClick={triggerDeepToolScan}
