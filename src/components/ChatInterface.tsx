@@ -789,6 +789,9 @@ export default function ChatInterface() {
                       <div className="markdown-body prose prose-invert prose-green max-w-none text-xs sm:text-sm">
                         <Markdown
                           components={{
+                            p({ children }) {
+                              return <div className="mb-4 last:mb-0">{children}</div>;
+                            },
                             code({ node, inline, className, children, ...props }: any) {
                               if (!inline) {
                                 return (
