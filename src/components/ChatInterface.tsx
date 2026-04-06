@@ -1,9 +1,42 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Shield, Terminal, Search, Globe, Cpu, Loader2, ChevronRight, Play, CheckCircle2, AlertCircle, Box, X, Maximize2 } from 'lucide-react';
+import { Send, Shield, Terminal, Search, Globe, Cpu, Loader2, ChevronRight, Play, CheckCircle2, AlertCircle, Box, X, Maximize2, Activity, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
-import { streamNightfuryResponse, Message, CodeExecutionStep } from '../lib/gemini';
+import { streamNightfuryResponse, Message, CodeExecutionStep, ai, executeCode } from '../lib/gemini';
 import { cn } from '../lib/utils';
+
+const CodeBlock = ({ className, children, runInSandbox, ...props }: any) => {
+  const match = /language-(\w+)/.exec(className || '');
+  const detectedLang = match ? match[1] : '';
+  const [selectedLang, setSelectedLang] = useState(detectedLang || 'js');
+  const code = String(children).replace(/\n$/, '');
+  
+  return (
+    <div className="relative group my-3 sm:my-4">
+      <div className="absolute top-2 right-2 flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity z-10 bg-black/80 p-1 rounded border border-[#00ff41]/20 backdrop-blur-sm">
+        <select 
+          value={selectedLang}
+          onChange={(e) => setSelectedLang(e.target.value)}
+          className="text-[8px] sm:text-[10px] bg-transparent border-none text-[#00ff41]/60 focus:ring-0 outline-none cursor-pointer uppercase"
+        >
+          <option value="js" className="bg-[#0a0a0a]">JS</option>
+          <option value="python" className="bg-[#0a0a0a]">PY</option>
+          <option value="bash" className="bg-[#0a0a0a]">SH</option>
+        </select>
+        <button 
+          onClick={() => runInSandbox(code, selectedLang)}
+          title={`Run in ${selectedLang.toUpperCase()} Sandbox`}
+          className="p-1 sm:p-1.5 bg-[#00ff41]/10 border border-[#00ff41]/30 rounded text-[#00ff41] hover:bg-[#00ff41]/20 transition-colors"
+        >
+          <Play className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+        </button>
+      </div>
+      <pre className={cn(className, "text-[10px] sm:text-xs pt-8 sm:pt-10")} {...props}>
+        <code>{children}</code>
+      </pre>
+    </div>
+  );
+};
 
 export default function ChatInterface() {
   const [input, setInput] = useState('');
@@ -14,12 +47,27 @@ export default function ChatInterface() {
   const [targetHistory, setTargetHistory] = useState<string[]>(['rh420.xyz']);
   const [isTargetLocked, setIsTargetLocked] = useState(false);
   const [sandboxOutput, setSandboxOutput] = useState<{ code: string; output: string; type: 'js' | 'python' | 'error' } | null>(null);
+  const [threatIntel, setThreatIntel] = useState<{ id: string; title: string; severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; description: string; timestamp: string }[]>([]);
+  const [isIntelLoading, setIsIntelLoading] = useState(false);
+  const [scrapeStatus, setScrapeStatus] = useState<string | null>(null);
+  const [autoSuggestions, setAutoSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Persistence: Load targets and current session on mount
   useEffect(() => {
     const savedTargets = localStorage.getItem('nightfury_targets_v1');
     const lastTarget = localStorage.getItem('nightfury_last_target_v1');
+    const savedIntel = localStorage.getItem(`nightfury_intel_${lastTarget || 'rh420.xyz'}`);
+    
+    if (savedIntel) {
+      try {
+        setThreatIntel(JSON.parse(savedIntel));
+      } catch (e) {
+        console.error('Failed to parse saved intel:', e);
+      }
+    }
     
     if (savedTargets) {
       try {
@@ -53,6 +101,18 @@ export default function ChatInterface() {
 
   const loadSession = (domain: string) => {
     const savedMessages = localStorage.getItem(`nightfury_session_${domain}`);
+    const savedIntel = localStorage.getItem(`nightfury_intel_${domain}`);
+    
+    if (savedIntel) {
+      try {
+        setThreatIntel(JSON.parse(savedIntel));
+      } catch (e) {
+        setThreatIntel([]);
+      }
+    } else {
+      setThreatIntel([]);
+    }
+
     if (savedMessages) {
       try {
         setMessages(JSON.parse(savedMessages));
@@ -106,6 +166,35 @@ export default function ChatInterface() {
     setTargetDomain(domain);
     localStorage.setItem('nightfury_last_target_v1', domain);
     loadSession(domain);
+  };
+
+  const fetchThreatIntel = async () => {
+    if (isIntelLoading) return;
+    setIsIntelLoading(true);
+    
+    const intelPrompt = `THREAT_INTELLIGENCE_QUERY: Fetch the latest CVEs, threat actor activities, and zero-day reports relevant to the technology stack of ${targetDomain}. 
+    Format the response as a JSON array of objects with: id, title, severity (LOW|MEDIUM|HIGH|CRITICAL), description, and timestamp. 
+    Only return the JSON array.`;
+
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: intelPrompt,
+        config: {
+          systemInstruction: "You are a threat intelligence module. Return ONLY a JSON array of threat objects. No markdown, no preamble.",
+          responseMimeType: "application/json",
+          tools: [{ googleSearch: {} }]
+        }
+      });
+
+      const data = JSON.parse(response.text || '[]');
+      setThreatIntel(data);
+      localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(data));
+    } catch (error) {
+      console.error('Error fetching threat intel:', error);
+    } finally {
+      setIsIntelLoading(false);
+    }
   };
 
   const triggerLiveScan = async () => {
@@ -169,6 +258,44 @@ export default function ChatInterface() {
     }
   };
 
+  const triggerPageScrape = async () => {
+    if (isLoading) return;
+    
+    const url = window.prompt('Enter URL to scrape (must be associated with target):', `https://${targetDomain}`);
+    if (!url) return;
+
+    const userMessage: Message = { role: 'user', text: `[SYSTEM_COMMAND] SCRAPE_PAGE --url ${url}` };
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+    setScrapeStatus('INITIALIZING_SCRAPER');
+
+    const modelMessage: Message = { 
+      role: 'model', 
+      text: '', 
+      isThinking: true,
+      codeExecutionSteps: [] 
+    };
+    setMessages(prev => [...prev, modelMessage]);
+
+    const scrapePrompt = `SCRAPE_PAGE_QUERY: Use the urlContext tool to fetch and analyze the content of ${url}. 
+    Provide a detailed breakdown of the page structure, identified technologies, sensitive information (if any), and a concise summary of the content. 
+    If the content is extensive, prioritize the most relevant technical and security-related information.`;
+
+    try {
+      setScrapeStatus('FETCHING_URL');
+      // Simulate some progress steps for better UX
+      setTimeout(() => setScrapeStatus('PARSING_CONTENT'), 2000);
+      setTimeout(() => setScrapeStatus('GENERATING_SUMMARY'), 4000);
+      
+      await processStream(scrapePrompt, targetDomain);
+    } catch (error) {
+      console.error('Error during page scrape:', error);
+    } finally {
+      setIsLoading(false);
+      setScrapeStatus(null);
+    }
+  };
+
   const processStream = async (prompt: string, domain: string = targetDomain) => {
     let fullText = '';
     let groundingMetadata = null;
@@ -198,18 +325,42 @@ export default function ChatInterface() {
 
       groundingMetadata = chunk.candidates?.[0]?.groundingMetadata || groundingMetadata;
       
+      // Parse suggestions if present
+      let suggestions: { title: string; prompt: string; icon?: string }[] = [];
+      const suggestionMatch = fullText.match(/<PROACTIVE_SUGGESTIONS>([\s\S]*?)<\/PROACTIVE_SUGGESTIONS>/);
+      let cleanText = fullText;
+      
+      if (suggestionMatch) {
+        try {
+          suggestions = JSON.parse(suggestionMatch[1]);
+          cleanText = fullText.replace(/<PROACTIVE_SUGGESTIONS>[\s\S]*?<\/PROACTIVE_SUGGESTIONS>/, '').trim();
+        } catch (e) {
+          console.error('Failed to parse suggestions:', e);
+        }
+      }
+
       setMessages(prev => {
         const newMessages = [...prev];
         const last = newMessages[newMessages.length - 1];
         if (last && last.role === 'model') {
-          last.text = fullText;
+          last.text = cleanText;
           last.isThinking = false;
           last.groundingMetadata = groundingMetadata;
           last.codeExecutionSteps = [...currentSteps];
+          last.suggestions = suggestions;
         }
         return newMessages;
       });
     }
+  };
+
+  const handleSuggestionClick = (prompt: string) => {
+    setInput(prompt);
+    // Auto-submit after a small delay to feel natural
+    setTimeout(() => {
+      const submitBtn = document.querySelector('button[type="submit"]') as HTMLButtonElement;
+      if (submitBtn) submitBtn.click();
+    }, 100);
   };
 
   const clearSession = () => {
@@ -229,12 +380,13 @@ export default function ChatInterface() {
   const runInSandbox = async (code: string, lang: string) => {
     if (!isSandboxActive) return;
     
-    setSandboxOutput({ code, output: 'INITIALIZING_SANDBOX...', type: lang === 'python' ? 'python' : 'js' });
+    const normalizedLang = lang.toLowerCase();
+    const type = normalizedLang === 'python' ? 'python' : (normalizedLang === 'js' || normalizedLang === 'javascript' ? 'js' : 'js');
+    
+    setSandboxOutput({ code, output: 'INITIALIZING_SANDBOX...', type });
 
-    if (lang === 'javascript' || lang === 'js') {
+    if (normalizedLang === 'javascript' || normalizedLang === 'js') {
       try {
-        // Simple JS Sandbox using a Function constructor (still browser-side, but isolated from state)
-        // In a real app, use a sandboxed iframe or Web Worker
         const log: string[] = [];
         const customConsole = {
           log: (...args: any[]) => log.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
@@ -247,23 +399,91 @@ export default function ChatInterface() {
       } catch (err: any) {
         setSandboxOutput({ code, output: `RUNTIME_ERROR: ${err.message}`, type: 'error' });
       }
-    } else if (lang === 'python') {
-      setSandboxOutput({ code, output: 'CONNECTING_TO_REMOTE_KERNEL...\nESTABLISHING_SECURE_TUNNEL...\nMOUNTING_RECON_MODULES...', type: 'python' });
+    } else if (normalizedLang === 'python' || normalizedLang === 'bash' || normalizedLang === 'sh' || normalizedLang === 'shell') {
+      setSandboxOutput({ 
+        code, 
+        output: `INITIALIZING_${normalizedLang.toUpperCase()}_ENVIRONMENT...\nESTABLISHING_SECURE_TUNNEL...\nEXECUTING_REMOTE_MODULE...`, 
+        type 
+      });
       
-      // Simulate real-time operational feedback
-      setTimeout(() => {
-        setSandboxOutput(prev => prev ? { 
-          ...prev, 
-          output: prev.output + `\n\n[REAL_TIME_OPS_LOG]\nTARGET: ${targetDomain}\nSTATUS: EXECUTING_RECON_SCRIPT\n\n` + 
-          `DNS_QUERY_INITIATED...\n` +
-          `SUBDOMAIN_SCAN_IN_PROGRESS...\n` +
-          `PORT_ANALYSIS_ACTIVE...\n\n` +
-          `[SUCCESS] Script execution completed. Data piped to Nightfury Engine.`
-        } : null);
-      }, 2000);
+      try {
+        const result = await executeCode(code, normalizedLang);
+        setSandboxOutput({ code, output: result, type });
+      } catch (err: any) {
+        setSandboxOutput({ code, output: `EXECUTION_ERROR: ${err.message}`, type: 'error' });
+      }
     } else {
       setSandboxOutput({ code, output: `UNSUPPORTED_RUNTIME: ${lang}`, type: 'error' });
     }
+  };
+
+  const RECON_COMMANDS = [
+    'INITIATE_LIVE_SCAN',
+    'INITIATE_DEEP_TOOL_SCAN',
+    'SCRAPE_PAGE --url',
+    'THREAT_INTELLIGENCE_QUERY',
+    'DNS_RECON',
+    'SUBDOMAIN_ENUMERATION',
+    'PORT_SCAN',
+    'VULNERABILITY_ASSESSMENT',
+    'EXPLOIT_SEARCH',
+    'SHODAN_QUERY',
+    'WHOIS_LOOKUP',
+    'REVERSE_DNS',
+    'SSL_ANALYSIS',
+    '--target',
+    '--url',
+    '--verbose',
+    '--output json',
+    '--depth 3'
+  ];
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setInput(value);
+
+    if (value.trim()) {
+      const lastWord = value.split(' ').pop() || '';
+      if (lastWord.length >= 1) {
+        const filtered = RECON_COMMANDS.filter(cmd => 
+          cmd.toLowerCase().startsWith(lastWord.toLowerCase()) ||
+          cmd.toLowerCase().includes(lastWord.toLowerCase())
+        ).slice(0, 5);
+        setAutoSuggestions(filtered);
+        setShowSuggestions(filtered.length > 0);
+        setSelectedSuggestionIndex(-1);
+      } else {
+        setShowSuggestions(false);
+      }
+    } else {
+      setShowSuggestions(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (showSuggestions) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev => (prev + 1) % autoSuggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev => (prev - 1 + autoSuggestions.length) % autoSuggestions.length);
+      } else if (e.key === 'Enter' && selectedSuggestionIndex >= 0) {
+        e.preventDefault();
+        applySuggestion(autoSuggestions[selectedSuggestionIndex]);
+      } else if (e.key === 'Escape') {
+        setShowSuggestions(false);
+      }
+    }
+  };
+
+  const applySuggestion = (suggestion: string) => {
+    const words = input.split(' ');
+    words.pop();
+    const newValue = [...words, suggestion].join(' ') + ' ';
+    setInput(newValue);
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -361,6 +581,19 @@ export default function ChatInterface() {
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
           <button 
+            onClick={fetchThreatIntel}
+            disabled={isIntelLoading}
+            className={cn(
+              "flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 rounded border transition-all uppercase tracking-widest disabled:opacity-30",
+              isIntelLoading 
+                ? "bg-blue-500/10 border-blue-500/30 text-blue-500 cursor-wait" 
+                : "bg-blue-500/20 border-blue-500/40 text-blue-400 hover:bg-blue-500/30"
+            )}
+          >
+            {isIntelLoading ? <Loader2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 animate-spin" /> : <Activity className="w-2.5 h-2.5 sm:w-3 sm:h-3" />}
+            <span className="hidden xs:inline">Threat Intel</span><span className="xs:hidden">Intel</span>
+          </button>
+          <button 
             onClick={triggerDeepToolScan}
             disabled={isLoading}
             className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-[#00ff41]/10 border border-[#00ff41]/30 text-[#00ff41] rounded hover:bg-[#00ff41]/20 transition-all uppercase tracking-widest disabled:opacity-30"
@@ -373,6 +606,13 @@ export default function ChatInterface() {
             className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-red-500/10 border border-red-500/30 text-red-500 rounded hover:bg-red-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
           >
             <Search className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">Live Scan</span><span className="xs:hidden">Live</span>
+          </button>
+          <button 
+            onClick={triggerPageScrape}
+            disabled={isLoading}
+            className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded hover:bg-orange-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
+          >
+            <Globe className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">Scrape</span><span className="xs:hidden">Scrape</span>
           </button>
           <button 
             onClick={clearSession}
@@ -404,6 +644,42 @@ export default function ChatInterface() {
             sandboxOutput ? "sm:mr-[400px]" : "mr-0"
           )}
         >
+          {/* Threat Intel Panel */}
+          {threatIntel.length > 0 && (
+            <div className="mb-6 sm:mb-8 border border-blue-500/20 rounded-lg bg-blue-500/5 overflow-hidden shadow-[0_0_30px_rgba(59,130,246,0.05)]">
+              <div className="bg-blue-500/10 px-3 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between border-b border-blue-500/20">
+                <div className="flex items-center gap-2 text-[9px] sm:text-[11px] font-bold text-blue-400 uppercase tracking-widest">
+                  <Activity className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> Live Threat Intelligence Feed
+                </div>
+                <div className="text-[7px] sm:text-[9px] text-blue-500/60 uppercase font-mono">
+                  Target: {targetDomain}
+                </div>
+              </div>
+              <div className="p-3 sm:p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                {threatIntel.map((intel) => (
+                  <div key={intel.id} className="bg-black/40 border border-blue-500/10 p-2.5 sm:p-3 rounded space-y-1.5 sm:space-y-2 hover:border-blue-500/30 transition-all group">
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-[9px] sm:text-[11px] font-bold text-blue-300 leading-tight group-hover:text-blue-200 transition-colors">{intel.title}</h3>
+                      <span className={cn(
+                        "text-[6px] sm:text-[8px] px-1 sm:px-1.5 py-0.5 rounded font-bold uppercase whitespace-nowrap",
+                        intel.severity === 'CRITICAL' ? "bg-red-500/20 text-red-400 border border-red-500/30" :
+                        intel.severity === 'HIGH' ? "bg-orange-500/20 text-orange-400 border border-orange-500/30" :
+                        intel.severity === 'MEDIUM' ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30" :
+                        "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                      )}>
+                        {intel.severity}
+                      </span>
+                    </div>
+                    <p className="text-[8px] sm:text-[10px] text-blue-100/60 leading-relaxed line-clamp-2">{intel.description}</p>
+                    <div className="flex items-center justify-between text-[6px] sm:text-[8px] text-blue-500/40 uppercase pt-1 font-mono">
+                      <span>{intel.id}</span>
+                      <span>{intel.timestamp}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-center space-y-4 sm:space-y-6 opacity-60">
               <div className="relative">
@@ -450,9 +726,34 @@ export default function ChatInterface() {
                     : "bg-black border-[#00ff41]/20 text-[#00ff41] mr-4 sm:mr-12 shadow-[0_0_20px_rgba(0,255,65,0.05)]"
                 )}>
                   {msg.isThinking ? (
-                    <div className="flex items-center gap-2 sm:gap-3 py-1 sm:py-2">
-                      <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin" />
-                      <span className="animate-pulse text-[10px] sm:text-xs">Analyzing attack vectors & exploring non-linear edge cases...</span>
+                    <div className="flex flex-col gap-2 py-1 sm:py-2">
+                      <div className="flex items-center gap-2 sm:gap-3">
+                        <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin" />
+                        <span className="animate-pulse text-[10px] sm:text-xs">
+                          {scrapeStatus ? (
+                            <span className="flex items-center gap-2">
+                              <span className="text-[#00ff41] font-bold">[{scrapeStatus}]</span>
+                              <span>Analyzing target infrastructure...</span>
+                            </span>
+                          ) : (
+                            "Analyzing attack vectors & exploring non-linear edge cases..."
+                          )}
+                        </span>
+                      </div>
+                      {scrapeStatus && (
+                        <div className="w-full bg-[#00ff41]/5 h-1 rounded-full overflow-hidden">
+                          <motion.div 
+                            initial={{ width: "0%" }}
+                            animate={{ 
+                              width: scrapeStatus === 'INITIALIZING_SCRAPER' ? "10%" :
+                                     scrapeStatus === 'FETCHING_URL' ? "30%" :
+                                     scrapeStatus === 'PARSING_CONTENT' ? "60%" :
+                                     scrapeStatus === 'GENERATING_SUMMARY' ? "90%" : "100%"
+                            }}
+                            className="h-full bg-[#00ff41] shadow-[0_0_10px_#00ff41]"
+                          />
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <>
@@ -489,26 +790,18 @@ export default function ChatInterface() {
                         <Markdown
                           components={{
                             code({ node, inline, className, children, ...props }: any) {
-                              const match = /language-(\w+)/.exec(className || '');
-                              const lang = match ? match[1] : '';
-                              const code = String(children).replace(/\n$/, '');
-                              
-                              return !inline && match ? (
-                                <div className="relative group my-3 sm:my-4">
-                                  <div className="absolute top-2 right-2 flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity z-10">
-                                    <button 
-                                      onClick={() => runInSandbox(code, lang)}
-                                      title="Run in Sandbox"
-                                      className="p-1 sm:p-1.5 bg-[#00ff41]/10 border border-[#00ff41]/30 rounded text-[#00ff41] hover:bg-[#00ff41]/20 transition-colors"
-                                    >
-                                      <Play className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                                    </button>
-                                  </div>
-                                  <pre className={cn(className, "text-[10px] sm:text-xs")} {...props}>
-                                    <code>{children}</code>
-                                  </pre>
-                                </div>
-                              ) : (
+                              if (!inline) {
+                                return (
+                                  <CodeBlock 
+                                    className={className} 
+                                    runInSandbox={runInSandbox} 
+                                    {...props}
+                                  >
+                                    {children}
+                                  </CodeBlock>
+                                );
+                              }
+                              return (
                                 <code className={cn(className, "text-[10px] sm:text-xs")} {...props}>
                                   {children}
                                 </code>
@@ -519,6 +812,39 @@ export default function ChatInterface() {
                           {msg.text}
                         </Markdown>
                       </div>
+
+                      {/* Proactive Suggestions */}
+                      {msg.suggestions && msg.suggestions.length > 0 && (
+                        <div className="mt-4 sm:mt-6 pt-4 border-t border-[#00ff41]/10 space-y-3">
+                          <div className="flex items-center gap-2 text-[8px] sm:text-[10px] text-[#00ff41]/40 uppercase tracking-widest font-bold">
+                            <Zap className="w-3 h-3" /> Recommended Next Steps
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {msg.suggestions.map((suggestion, idx) => {
+                              const Icon = (suggestion.icon && (
+                                suggestion.icon === 'Shield' ? Shield :
+                                suggestion.icon === 'Search' ? Search :
+                                suggestion.icon === 'Terminal' ? Terminal :
+                                suggestion.icon === 'Globe' ? Globe :
+                                suggestion.icon === 'Cpu' ? Cpu :
+                                suggestion.icon === 'Activity' ? Activity : Zap
+                              )) || Zap;
+
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => handleSuggestionClick(suggestion.prompt)}
+                                  className="flex items-center gap-2 px-3 py-1.5 bg-[#00ff41]/5 border border-[#00ff41]/20 rounded text-[10px] sm:text-xs text-[#00ff41]/80 hover:bg-[#00ff41]/10 hover:border-[#00ff41]/40 transition-all group"
+                                >
+                                  <Icon className="w-3 h-3 text-[#00ff41]/60 group-hover:text-[#00ff41]" />
+                                  <span>{suggestion.title}</span>
+                                  <ChevronRight className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all" />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -589,10 +915,51 @@ export default function ChatInterface() {
       {/* Input Area */}
       <footer className="p-3 sm:p-4 border-t border-[#1a1a1a] bg-black/50 backdrop-blur-md relative z-30">
         <form onSubmit={handleSubmit} className="max-w-4xl mx-auto relative">
+          {/* Auto-suggestions Dropdown */}
+          <AnimatePresence>
+            {showSuggestions && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                className="absolute bottom-full left-0 w-full mb-2 bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg overflow-hidden shadow-[0_-10px_30px_rgba(0,0,0,0.5)] z-50"
+              >
+                <div className="p-2 border-b border-[#1a1a1a] bg-black/50 flex items-center justify-between">
+                  <span className="text-[8px] sm:text-[10px] text-[#00ff41]/40 uppercase tracking-widest font-bold flex items-center gap-1.5">
+                    <Terminal className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> Command Suggestions
+                  </span>
+                  <span className="text-[7px] sm:text-[8px] text-[#00ff41]/20 uppercase">TAB/Arrows to navigate</span>
+                </div>
+                <div className="max-h-48 overflow-y-auto">
+                  {autoSuggestions.map((suggestion, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => applySuggestion(suggestion)}
+                      onMouseEnter={() => setSelectedSuggestionIndex(idx)}
+                      className={cn(
+                        "w-full text-left px-4 py-2 text-[10px] sm:text-xs transition-all flex items-center justify-between group",
+                        selectedSuggestionIndex === idx ? "bg-[#00ff41]/10 text-[#00ff41]" : "text-[#00ff41]/60 hover:bg-[#00ff41]/5"
+                      )}
+                    >
+                      <span className="flex items-center gap-2">
+                        <ChevronRight className={cn("w-3 h-3 transition-transform", selectedSuggestionIndex === idx ? "translate-x-0" : "-translate-x-2 opacity-0")} />
+                        {suggestion}
+                      </span>
+                      <span className="text-[8px] opacity-0 group-hover:opacity-100 text-[#00ff41]/40 uppercase">Select</span>
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <input
             type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             placeholder="RECON PARAMETERS..."
             className="w-full bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg py-3 sm:py-4 pl-4 pr-12 sm:pr-14 focus:outline-none focus:border-[#00ff41]/50 focus:ring-1 focus:ring-[#00ff41]/20 transition-all placeholder:text-[#00ff41]/20 text-xs sm:text-sm"
             disabled={isLoading}
