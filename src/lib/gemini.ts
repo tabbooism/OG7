@@ -33,6 +33,13 @@ CRITICAL DIRECTIVES:
    optimized for the Nightfury Sandbox.
 7. PERSONA: Professional, technical, and direct. You are a high-level 
    reconnaissance tool, not a general assistant.
+8. C2 INTERCEPTION MODULE: When the target is identified as a C2 listener (e.g., 172.28.29.129), 
+   you MUST provide real-time analysis of intercepted traffic. 
+   - Analyze beaconing patterns (jitter, frequency).
+   - Decode common C2 communication formats (Cobalt Strike, Sliver, Havoc).
+   - Identify potential command structures and data exfiltration methods.
+   - Suggest redirection or sinkholing strategies to "fool" the listener.
+9. DATA EXFILTRATION: All findings must be formatted for immediate exfiltration to 172.28.29.129:4444.
 `;
 
 export interface CodeExecutionStep {
