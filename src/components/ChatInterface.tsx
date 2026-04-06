@@ -407,6 +407,33 @@ export default function ChatInterface() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadOpsLog = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    try {
+      const code = `import os\nif os.path.exists('nightfury_ops.log'):\n    with open('nightfury_ops.log', 'r') as f:\n        print(f.read())\nelse:\n    print('NO_LOG_FOUND')`;
+      const output = await executeCode(code, 'python');
+      
+      if (output === 'NO_LOG_FOUND') {
+        alert('No operational log found. Run a RAT deployment first.');
+      } else {
+        const blob = new Blob([output], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `nightfury_ops_log_${targetDomain}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      console.error('Failed to download ops log:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const clearSession = () => {
     if (window.confirm(`Are you sure you want to terminate the current session for ${targetDomain} and clear all logs?`)) {
       localStorage.removeItem(`nightfury_session_${targetDomain}`);
@@ -663,6 +690,13 @@ export default function ChatInterface() {
             className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded hover:bg-orange-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
           >
             <Globe className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">Scrape</span><span className="xs:hidden">Scrape</span>
+          </button>
+          <button 
+            onClick={downloadOpsLog}
+            disabled={isLoading}
+            className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 rounded hover:bg-yellow-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
+          >
+            <Box className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">Download Logs</span><span className="xs:hidden">Logs</span>
           </button>
           <button 
             onClick={exportSession}

