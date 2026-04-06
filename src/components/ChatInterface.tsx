@@ -92,7 +92,14 @@ export default function ChatInterface() {
     if (messages.length > 0) {
       localStorage.setItem(`nightfury_session_${targetDomain}`, JSON.stringify(messages));
     }
-  }, [messages, targetDomain]);
+  }, [messages]);
+
+  // Persistence: Save threat intel whenever it changes
+  useEffect(() => {
+    if (threatIntel.length > 0) {
+      localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(threatIntel));
+    }
+  }, [threatIntel]);
 
   // Persistence: Save targets list
   useEffect(() => {
@@ -152,9 +159,18 @@ export default function ChatInterface() {
   const addNewTarget = () => {
     const newDomain = window.prompt('Enter new target domain (e.g., example.com):');
     if (newDomain && !targetHistory.includes(newDomain)) {
+      // Save current target's data before switching
+      if (messages.length > 0) {
+        localStorage.setItem(`nightfury_session_${targetDomain}`, JSON.stringify(messages));
+      }
+      if (threatIntel.length > 0) {
+        localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(threatIntel));
+      }
+
       setTargetHistory(prev => [...prev, newDomain]);
       setTargetDomain(newDomain);
       setMessages([]);
+      setThreatIntel([]);
       initializeRecon(newDomain);
     } else if (newDomain && targetHistory.includes(newDomain)) {
       switchTarget(newDomain);
@@ -163,6 +179,15 @@ export default function ChatInterface() {
 
   const switchTarget = (domain: string) => {
     if (domain === targetDomain) return;
+    
+    // Explicitly save current data before switching
+    if (messages.length > 0) {
+      localStorage.setItem(`nightfury_session_${targetDomain}`, JSON.stringify(messages));
+    }
+    if (threatIntel.length > 0) {
+      localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(threatIntel));
+    }
+
     setTargetDomain(domain);
     localStorage.setItem('nightfury_last_target_v1', domain);
     loadSession(domain);
