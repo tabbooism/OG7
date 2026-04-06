@@ -388,6 +388,25 @@ export default function ChatInterface() {
     }, 100);
   };
 
+  const exportSession = () => {
+    const data = {
+      target: targetDomain,
+      timestamp: new Date().toISOString(),
+      messages: messages,
+      intel: threatIntel,
+      ops_status: "AUTHORIZED_RESEARCH_LOG"
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nightfury_ops_${targetDomain}_${new Date().getTime()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const clearSession = () => {
     if (window.confirm(`Are you sure you want to terminate the current session for ${targetDomain} and clear all logs?`)) {
       localStorage.removeItem(`nightfury_session_${targetDomain}`);
@@ -644,6 +663,12 @@ export default function ChatInterface() {
             className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-orange-500/10 border border-orange-500/30 text-orange-500 rounded hover:bg-orange-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
           >
             <Globe className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">Scrape</span><span className="xs:hidden">Scrape</span>
+          </button>
+          <button 
+            onClick={exportSession}
+            className="flex-shrink-0 text-[9px] sm:text-[10px] px-2 py-1 border border-blue-500/30 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-all uppercase tracking-widest"
+          >
+            Export
           </button>
           <button 
             onClick={clearSession}
