@@ -613,6 +613,63 @@ export default function ChatInterface() {
     URL.revokeObjectURL(url);
   };
 
+  const exportSessionCsv = () => {
+    const escapeCsv = (str: string) => `"${str.replace(/"/g, '""')}"`;
+    
+    let csvContent = "SECTION,DATA_1,DATA_2,DATA_3,DATA_4,DATA_5,DATA_6,DATA_7\n";
+
+    // Messages
+    messages.forEach(m => {
+      csvContent += `MESSAGE,${m.role.toUpperCase()},${escapeCsv(m.text)},${new Date().toISOString()}\n`;
+    });
+
+    // Threat Intel
+    threatIntel.forEach(intel => {
+      csvContent += `INTEL,${intel.id},${escapeCsv(intel.title)},${intel.severity},${escapeCsv(intel.description)},${intel.timestamp}\n`;
+    });
+
+    // Target Profile
+    targetProfile.ips.forEach(ip => csvContent += `PROFILE,IP,${escapeCsv(ip)}\n`);
+    targetProfile.domains.forEach(d => csvContent += `PROFILE,DOMAIN,${escapeCsv(d)}\n`);
+    targetProfile.technologies.forEach(t => csvContent += `PROFILE,TECH,${escapeCsv(t)}\n`);
+    targetProfile.vulnerabilities.forEach(v => csvContent += `PROFILE,VULN,${escapeCsv(v)}\n`);
+
+    // C2 Logs
+    c2Interceptions.forEach(c2 => {
+      csvContent += `C2,${c2.id},${c2.framework},${c2.jitter},${c2.frequency},${escapeCsv(c2.commandStructure)},${escapeCsv(c2.redirectionStrategy)},${c2.timestamp}\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nightfury_session_${targetDomain}_${new Date().getTime()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportSessionJson = () => {
+    const data = {
+      target: targetDomain,
+      timestamp: new Date().toISOString(),
+      messages,
+      threatIntel,
+      targetProfile,
+      c2Interceptions
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nightfury_session_${targetDomain}_${new Date().getTime()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const downloadOpsLog = async () => {
     if (isLoading) return;
     setIsLoading(true);
