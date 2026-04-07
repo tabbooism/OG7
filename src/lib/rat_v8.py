@@ -11,7 +11,7 @@ import argparse
 load_dotenv()
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--target", default="https://runehall.com", help="Target base URL")
+parser.add_argument("--target", default="https://rh420.xyz", help="Target base URL")
 parser.add_argument("--c2", default="http://172.28.29.129:4444", help="C2 server")
 parser.add_argument("--verbose", action="store_true")
 args = parser.parse_args()

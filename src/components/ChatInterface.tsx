@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Shield, Terminal, Search, Globe, Cpu, Loader2, ChevronRight, Play, CheckCircle2, AlertCircle, Box, X, Maximize2, Activity, Zap, Lock, Unlock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
-import { streamNightfuryResponse, Message, CodeExecutionStep, ai, executeCode } from '../lib/gemini';
+import { streamNightfuryResponse, Message, CodeExecutionStep, ai, executeCode, TargetProfile } from '../lib/gemini';
 import { cn } from '../lib/utils';
 
 const CodeBlock = ({ className, children, runInSandbox, ...props }: any) => {
@@ -43,27 +43,63 @@ export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSandboxActive, setIsSandboxActive] = useState(true);
-  const [targetDomain, setTargetDomain] = useState('runehall.com');
+  const [targetDomain, setTargetDomain] = useState('rh420.xyz');
   const [isTargetLocked, setIsTargetLocked] = useState(false);
   const [sandboxOutput, setSandboxOutput] = useState<{ code: string; output: string; type: 'js' | 'python' | 'error' } | null>(null);
   const [threatIntel, setThreatIntel] = useState<{ id: string; title: string; severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; description: string; timestamp: string }[]>([]);
   const [isIntelLoading, setIsIntelLoading] = useState(false);
+  const [targetProfile, setTargetProfile] = useState<TargetProfile>({
+    ips: [],
+    domains: [],
+    technologies: [],
+    vulnerabilities: []
+  });
   const [scrapeStatus, setScrapeStatus] = useState<string | null>(null);
   const [c2Interceptions, setC2Interceptions] = useState<{ id: string; framework: string; jitter: string; frequency: string; commandStructure: string; redirectionStrategy: string; timestamp: string; hosts: string[] }[]>([]);
   const [isC2Loading, setIsC2Loading] = useState(false);
+  const [newIpInput, setNewIpInput] = useState('');
+  const [newDomainInput, setNewDomainInput] = useState('');
   const [autoSuggestions, setAutoSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [isOpsLocked, setIsOpsLocked] = useState(true);
   const [isForceMode, setIsForceMode] = useState(false);
+  const [autoSaveInterval, setAutoSaveInterval] = useState(30); // in seconds
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const saveAllState = () => {
+    const lastTarget = targetDomain;
+    localStorage.setItem(`nightfury_session_${lastTarget}`, JSON.stringify(messages));
+    localStorage.setItem(`nightfury_intel_${lastTarget}`, JSON.stringify(threatIntel));
+    localStorage.setItem(`nightfury_c2_${lastTarget}`, JSON.stringify(c2Interceptions));
+    localStorage.setItem(`nightfury_profile_${lastTarget}`, JSON.stringify(targetProfile));
+    localStorage.setItem(`nightfury_lock_${lastTarget}`, isOpsLocked.toString());
+    localStorage.setItem(`nightfury_force_${lastTarget}`, isForceMode.toString());
+    
+    const now = new Date().toLocaleTimeString();
+    setLastSaved(now);
+    console.log(`[Nightfury] Auto-save completed at ${now}`);
+  };
+
+  // Periodic Auto-save: Runs every autoSaveInterval seconds
+  useEffect(() => {
+    if (autoSaveInterval <= 0) return;
+    
+    const timer = setInterval(() => {
+      saveAllState();
+    }, autoSaveInterval * 1000);
+    
+    return () => clearInterval(timer);
+  }, [autoSaveInterval, messages, threatIntel, c2Interceptions, targetProfile, isOpsLocked, isForceMode, targetDomain]);
 
   // Persistence: Load current session on mount
   useEffect(() => {
-    const lastTarget = 'runehall.com';
+    const lastTarget = 'rh420.xyz';
     const savedIntel = localStorage.getItem(`nightfury_intel_${lastTarget}`);
     const savedLockState = localStorage.getItem(`nightfury_lock_${lastTarget}`);
     const savedC2 = localStorage.getItem(`nightfury_c2_${lastTarget}`);
+    const savedProfile = localStorage.getItem(`nightfury_profile_${lastTarget}`);
     
     if (savedIntel) {
       try {
@@ -78,6 +114,14 @@ export default function ChatInterface() {
         setC2Interceptions(JSON.parse(savedC2));
       } catch (e) {
         console.error('Failed to parse saved C2:', e);
+      }
+    }
+
+    if (savedProfile) {
+      try {
+        setTargetProfile(JSON.parse(savedProfile));
+      } catch (e) {
+        console.error('Failed to parse saved profile:', e);
       }
     }
 
@@ -113,6 +157,11 @@ export default function ChatInterface() {
       localStorage.setItem(`nightfury_c2_${targetDomain}`, JSON.stringify(c2Interceptions));
     }
   }, [c2Interceptions, targetDomain]);
+
+  // Persistence: Save target profile whenever it changes
+  useEffect(() => {
+    localStorage.setItem(`nightfury_profile_${targetDomain}`, JSON.stringify(targetProfile));
+  }, [targetProfile, targetDomain]);
 
   // Persistence: Save lock state
   useEffect(() => {
@@ -355,6 +404,51 @@ export default function ChatInterface() {
     } finally {
       setIsLoading(false);
       setScrapeStatus(null);
+    }
+  };
+
+  const triggerAutoPopulateProfile = async () => {
+    if (isLoading || messages.length === 0) return;
+    
+    const history = messages.map(m => `${m.role.toUpperCase()}: ${m.text}`).join('\n\n');
+    const populatePrompt = `EXTRACT_TARGET_PROFILE: Based on the following reconnaissance history for ${targetDomain}, extract a structured profile.
+    
+    History:
+    ${history}
+    
+    Return a JSON object with the following structure:
+    {
+      "ips": ["list of IP addresses found"],
+      "domains": ["list of subdomains found"],
+      "technologies": ["list of tech stack components found"],
+      "vulnerabilities": ["list of vulnerabilities or CVEs found"]
+    }
+    
+    Only include confirmed or highly likely findings. Do not include generic information.`;
+
+    setIsLoading(true);
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: populatePrompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      if (response.text) {
+        const extracted = JSON.parse(response.text);
+        setTargetProfile(prev => ({
+          ips: [...new Set([...prev.ips, ...(extracted.ips || [])])],
+          domains: [...new Set([...prev.domains, ...(extracted.domains || [])])],
+          technologies: [...new Set([...prev.technologies, ...(extracted.technologies || [])])],
+          vulnerabilities: [...new Set([...prev.vulnerabilities, ...(extracted.vulnerabilities || [])])]
+        }));
+      }
+    } catch (error) {
+      console.error('Error auto-populating profile:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -755,6 +849,27 @@ export default function ChatInterface() {
               )}>
                 <Box className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> SANDBOX_{isSandboxActive ? "ON" : "OFF"}
               </span>
+              <div className="flex items-center gap-2 border-l border-[#1a1a1a] pl-2 ml-1">
+                <span className="flex items-center gap-1 text-[#00ff41]/40">
+                  <Zap className="w-2.5 h-2.5" /> AUTO-SAVE:
+                </span>
+                <select 
+                  value={autoSaveInterval}
+                  onChange={(e) => setAutoSaveInterval(Number(e.target.value))}
+                  className="bg-black border border-[#00ff41]/20 rounded text-[8px] sm:text-[10px] text-[#00ff41] px-1 py-0.5 outline-none focus:border-[#00ff41]/50"
+                >
+                  <option value={5}>5s</option>
+                  <option value={10}>10s</option>
+                  <option value={30}>30s</option>
+                  <option value={60}>1m</option>
+                  <option value={300}>5m</option>
+                </select>
+                {lastSaved && (
+                  <span className="text-[7px] sm:text-[8px] text-[#00ff41]/30 italic">
+                    LAST: {lastSaved}
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-1 text-[#00ff41] border-l border-[#1a1a1a] pl-2 ml-1 sm:ml-2">
                 <Search className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 <span className="font-bold text-[#00ff41]">{targetDomain}</span>
@@ -965,6 +1080,190 @@ export default function ChatInterface() {
               </div>
             </div>
           )}
+
+          {/* Target Profile Section */}
+          <div className="mb-6 sm:mb-8 border border-green-500/20 rounded-lg bg-green-500/5 overflow-hidden shadow-[0_0_30px_rgba(34,197,94,0.05)]">
+            <div className="bg-green-500/10 px-3 sm:px-4 py-2 border-b border-green-500/20 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Maximize2 className="w-3 h-3 sm:w-4 sm:h-4 text-green-500" />
+                <span className="text-[10px] sm:text-xs font-bold text-green-500 uppercase tracking-widest">Target Profile: {targetDomain}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={triggerAutoPopulateProfile}
+                  disabled={isLoading || messages.length === 0}
+                  className="text-[8px] sm:text-[10px] text-green-500 hover:text-green-400 uppercase flex items-center gap-1 disabled:opacity-30"
+                >
+                  <Cpu className="w-2.5 h-2.5" /> Auto-Populate
+                </button>
+                <button 
+                  onClick={() => setTargetProfile({ ips: [], domains: [], technologies: [], vulnerabilities: [] })}
+                  className="text-[8px] sm:text-[10px] text-green-500/60 hover:text-green-500 uppercase"
+                >
+                  Reset Profile
+                </button>
+              </div>
+            </div>
+            <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* IPs */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[8px] sm:text-[10px] font-bold text-green-500/60 uppercase tracking-tighter">IP Addresses</span>
+                </div>
+                <div className="flex gap-1">
+                  <input 
+                    type="text"
+                    value={newIpInput}
+                    onChange={(e) => setNewIpInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newIpInput.trim()) {
+                        setTargetProfile(prev => ({ ...prev, ips: [...new Set([...prev.ips, newIpInput.trim()])] }));
+                        setNewIpInput('');
+                      }
+                    }}
+                    placeholder="Add IP..."
+                    className="flex-1 bg-black/40 border border-green-500/20 rounded px-1.5 py-0.5 text-[8px] sm:text-[9px] text-green-400 outline-none focus:border-green-500/40 transition-colors"
+                  />
+                  <button 
+                    onClick={() => {
+                      if (newIpInput.trim()) {
+                        setTargetProfile(prev => ({ ...prev, ips: [...new Set([...prev.ips, newIpInput.trim()])] }));
+                        setNewIpInput('');
+                      }
+                    }}
+                    className="px-1.5 py-0.5 bg-green-500/10 border border-green-500/20 rounded text-green-500 text-[8px] hover:bg-green-500/20"
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 min-h-[24px]">
+                  {targetProfile.ips.length > 0 ? targetProfile.ips.map(ip => (
+                    <span key={ip} className="px-1.5 py-0.5 bg-green-500/10 border border-green-500/20 rounded text-green-400 text-[8px] sm:text-[9px] font-mono group relative">
+                      {ip}
+                      <button 
+                        onClick={() => setTargetProfile(prev => ({ ...prev, ips: prev.ips.filter(i => i !== ip) }))}
+                        className="ml-1 text-red-500/40 hover:text-red-500"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )) : (
+                    <span className="text-[8px] text-green-500/30 italic">No IPs recorded</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Domains */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[8px] sm:text-[10px] font-bold text-green-500/60 uppercase tracking-tighter">Domains</span>
+                </div>
+                <div className="flex gap-1">
+                  <input 
+                    type="text"
+                    value={newDomainInput}
+                    onChange={(e) => setNewDomainInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newDomainInput.trim()) {
+                        setTargetProfile(prev => ({ ...prev, domains: [...new Set([...prev.domains, newDomainInput.trim()])] }));
+                        setNewDomainInput('');
+                      }
+                    }}
+                    placeholder="Add Domain..."
+                    className="flex-1 bg-black/40 border border-green-500/20 rounded px-1.5 py-0.5 text-[8px] sm:text-[9px] text-green-400 outline-none focus:border-green-500/40 transition-colors"
+                  />
+                  <button 
+                    onClick={() => {
+                      if (newDomainInput.trim()) {
+                        setTargetProfile(prev => ({ ...prev, domains: [...new Set([...prev.domains, newDomainInput.trim()])] }));
+                        setNewDomainInput('');
+                      }
+                    }}
+                    className="px-1.5 py-0.5 bg-green-500/10 border border-green-500/20 rounded text-green-500 text-[8px] hover:bg-green-500/20"
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 min-h-[24px]">
+                  {targetProfile.domains.length > 0 ? targetProfile.domains.map(domain => (
+                    <span key={domain} className="px-1.5 py-0.5 bg-green-500/10 border border-green-500/20 rounded text-green-400 text-[8px] sm:text-[9px] font-mono group relative">
+                      {domain}
+                      <button 
+                        onClick={() => setTargetProfile(prev => ({ ...prev, domains: prev.domains.filter(d => d !== domain) }))}
+                        className="ml-1 text-red-500/40 hover:text-red-500"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )) : (
+                    <span className="text-[8px] text-green-500/30 italic">No domains recorded</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Technologies */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[8px] sm:text-[10px] font-bold text-green-500/60 uppercase tracking-tighter">Tech Stack</span>
+                  <button 
+                    onClick={() => {
+                      const tech = window.prompt('Add Technology:');
+                      if (tech) setTargetProfile(prev => ({ ...prev, technologies: [...new Set([...prev.technologies, tech])] }));
+                    }}
+                    className="text-[8px] text-green-500 hover:underline"
+                  >
+                    + Add
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 min-h-[24px]">
+                  {targetProfile.technologies.length > 0 ? targetProfile.technologies.map(tech => (
+                    <span key={tech} className="px-1.5 py-0.5 bg-green-500/10 border border-green-500/20 rounded text-green-400 text-[8px] sm:text-[9px] font-mono group relative">
+                      {tech}
+                      <button 
+                        onClick={() => setTargetProfile(prev => ({ ...prev, technologies: prev.technologies.filter(t => t !== tech) }))}
+                        className="ml-1 text-red-500/40 hover:text-red-500"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )) : (
+                    <span className="text-[8px] text-green-500/30 italic">No tech identified</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Vulnerabilities */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[8px] sm:text-[10px] font-bold text-green-500/60 uppercase tracking-tighter">Vulnerabilities</span>
+                  <button 
+                    onClick={() => {
+                      const vuln = window.prompt('Add Vulnerability:');
+                      if (vuln) setTargetProfile(prev => ({ ...prev, vulnerabilities: [...new Set([...prev.vulnerabilities, vuln])] }));
+                    }}
+                    className="text-[8px] text-green-500 hover:underline"
+                  >
+                    + Add
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5 min-h-[24px]">
+                  {targetProfile.vulnerabilities.length > 0 ? targetProfile.vulnerabilities.map(vuln => (
+                    <span key={vuln} className="px-1.5 py-0.5 bg-red-500/10 border border-red-500/20 rounded text-red-400 text-[8px] sm:text-[9px] font-mono group relative">
+                      {vuln}
+                      <button 
+                        onClick={() => setTargetProfile(prev => ({ ...prev, vulnerabilities: prev.vulnerabilities.filter(v => v !== vuln) }))}
+                        className="ml-1 text-red-500/40 hover:text-red-500"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )) : (
+                    <span className="text-[8px] text-green-500/30 italic">No vulnerabilities found</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* Threat Intel Panel */}
           {threatIntel.length > 0 && (
