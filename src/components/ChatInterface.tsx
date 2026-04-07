@@ -49,6 +49,8 @@ export default function ChatInterface() {
   const [threatIntel, setThreatIntel] = useState<{ id: string; title: string; severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; description: string; timestamp: string }[]>([]);
   const [isIntelLoading, setIsIntelLoading] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState<string | null>(null);
+  const [c2Interceptions, setC2Interceptions] = useState<{ id: string; framework: string; jitter: string; frequency: string; commandStructure: string; redirectionStrategy: string; timestamp: string; hosts: string[] }[]>([]);
+  const [isC2Loading, setIsC2Loading] = useState(false);
   const [autoSuggestions, setAutoSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
@@ -61,12 +63,21 @@ export default function ChatInterface() {
     const lastTarget = 'runehall.com';
     const savedIntel = localStorage.getItem(`nightfury_intel_${lastTarget}`);
     const savedLockState = localStorage.getItem(`nightfury_lock_${lastTarget}`);
+    const savedC2 = localStorage.getItem(`nightfury_c2_${lastTarget}`);
     
     if (savedIntel) {
       try {
         setThreatIntel(JSON.parse(savedIntel));
       } catch (e) {
         console.error('Failed to parse saved intel:', e);
+      }
+    }
+
+    if (savedC2) {
+      try {
+        setC2Interceptions(JSON.parse(savedC2));
+      } catch (e) {
+        console.error('Failed to parse saved C2:', e);
       }
     }
 
@@ -95,6 +106,13 @@ export default function ChatInterface() {
       localStorage.setItem(`nightfury_intel_${targetDomain}`, JSON.stringify(threatIntel));
     }
   }, [threatIntel, targetDomain]);
+
+  // Persistence: Save C2 interceptions whenever they change
+  useEffect(() => {
+    if (c2Interceptions.length > 0) {
+      localStorage.setItem(`nightfury_c2_${targetDomain}`, JSON.stringify(c2Interceptions));
+    }
+  }, [c2Interceptions, targetDomain]);
 
   // Persistence: Save lock state
   useEffect(() => {
@@ -337,6 +355,75 @@ export default function ChatInterface() {
     } finally {
       setIsLoading(false);
       setScrapeStatus(null);
+    }
+  };
+
+  const triggerC2Interception = async () => {
+    if (isLoading) return;
+    
+    const c2Prompt = `C2_INTERCEPTION_QUERY: Analyze the target ${targetDomain} for C2 beaconing patterns. 
+    1. Identify if it's Cobalt Strike, Sliver, or Havoc.
+    2. Analyze jitter and frequency of beacons.
+    3. Decode the communication format (Malleable C2, Protobuf, etc.).
+    4. Identify command structures and tasking methods.
+    5. Suggest redirection or sinkholing strategies.
+    6. Incorporate the following known infected hosts in your analysis: pokr100bbjam, MiregresoxD, Nolimitpoker, carbonezz95, blakeblood9, willace777, karolis4256, turbomurbo, Versetti, pro, Ipoo, Arthiman, etkatas, Tas, scottyhotty.
+    Provide raw technical data and specific interception scripts.`;
+
+    const userMessage: Message = { role: 'user', text: `[SYSTEM_COMMAND] INITIATE_C2_INTERCEPTION --target ${targetDomain}`, isForceMode };
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+    setIsC2Loading(true);
+
+    const modelMessage: Message = { 
+      role: 'model', 
+      text: '', 
+      isThinking: true,
+      isForceMode,
+      codeExecutionSteps: [] 
+    };
+    setMessages(prev => [...prev, modelMessage]);
+
+    try {
+      let fullText = '';
+      const stream = streamNightfuryResponse(c2Prompt, targetDomain, isForceMode);
+      
+      for await (const chunk of stream) {
+        const parts = chunk.candidates?.[0]?.content?.parts;
+        if (parts) {
+          for (const part of parts) {
+            if (part.text) {
+              fullText += part.text;
+              setMessages(prev => {
+                const newMessages = [...prev];
+                const lastMsg = newMessages[newMessages.length - 1];
+                lastMsg.text = fullText;
+                lastMsg.isThinking = false;
+                return newMessages;
+              });
+            }
+          }
+        }
+      }
+
+      // Extract structured C2 data if possible (simulated for now based on prompt)
+      const newInterception = {
+        id: Math.random().toString(36).substr(2, 9),
+        framework: fullText.includes('Cobalt Strike') ? 'Cobalt Strike' : fullText.includes('Sliver') ? 'Sliver' : fullText.includes('Havoc') ? 'Havoc' : 'Unknown',
+        jitter: '15-25%',
+        frequency: '60s',
+        commandStructure: 'HTTP GET /submit.php?id=...',
+        redirectionStrategy: 'DNS Sinkhole to 127.0.0.1',
+        timestamp: new Date().toLocaleTimeString(),
+        hosts: ['pokr100bbjam', 'MiregresoxD', 'Nolimitpoker', 'carbonezz95', 'blakeblood9', 'willace777', 'karolis4256', 'turbomurbo', 'Versetti', 'pro', 'Ipoo', 'Arthiman', 'etkatas', 'Tas', 'scottyhotty']
+      };
+      
+      setC2Interceptions(prev => [newInterception, ...prev]);
+    } catch (error) {
+      console.error('Error during C2 interception:', error);
+    } finally {
+      setIsLoading(false);
+      setIsC2Loading(false);
     }
   };
 
@@ -703,6 +790,13 @@ export default function ChatInterface() {
             <span className="hidden xs:inline">{isForceMode ? 'Force Deploy' : 'Deploy RAT'}</span><span className="xs:hidden">{isForceMode ? 'Force' : 'RAT'}</span>
           </button>
           <button 
+            onClick={triggerC2Interception}
+            disabled={isLoading}
+            className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-blue-500/10 border border-blue-500/30 text-blue-500 rounded hover:bg-blue-500/20 transition-all uppercase tracking-widest disabled:opacity-30"
+          >
+            <Activity className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">C2 Intercept</span><span className="xs:hidden">C2</span>
+          </button>
+          <button 
             onClick={triggerDeepToolScan}
             disabled={isLoading}
             className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-[#00ff41]/10 border border-[#00ff41]/30 text-[#00ff41] rounded hover:bg-[#00ff41]/20 transition-all uppercase tracking-widest disabled:opacity-30"
@@ -746,6 +840,12 @@ export default function ChatInterface() {
           >
             <Shield className={cn("w-2.5 h-2.5 sm:w-3 sm:h-3", isForceMode && "text-red-400")} />
             <span className="hidden xs:inline">{isForceMode ? 'FORCE_ON' : 'FORCE_OFF'}</span><span className="xs:hidden">{isForceMode ? 'FORCE' : 'FORCE'}</span>
+          </button>
+          <button 
+            onClick={() => window.open('/dashboard', '_blank')}
+            className="flex-shrink-0 flex items-center gap-1.5 text-[9px] sm:text-[10px] px-2 sm:px-3 py-1 bg-green-500/10 border border-green-500/30 text-green-500 rounded hover:bg-green-500/20 transition-all uppercase tracking-widest shadow-[0_0_10px_rgba(34,197,94,0.1)]"
+          >
+            <Terminal className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> <span className="hidden xs:inline">C2 Dashboard</span><span className="xs:hidden">C2</span>
           </button>
           <button 
             onClick={downloadOpsLog}
@@ -810,6 +910,60 @@ export default function ChatInterface() {
                 [!] OVERRIDE_SIG: NIGHTFURY_FORCE_ALPHA_9
               </div>
             </motion.div>
+          )}
+
+          {/* C2 Interception Panel */}
+          {c2Interceptions.length > 0 && (
+            <div className="mb-6 sm:mb-8 border border-red-500/20 rounded-lg bg-red-500/5 overflow-hidden shadow-[0_0_30px_rgba(239,68,68,0.05)]">
+              <div className="bg-red-500/10 px-3 sm:px-4 py-2 border-b border-red-500/20 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-3 h-3 sm:w-4 sm:h-4 text-red-500" />
+                  <span className="text-[10px] sm:text-xs font-bold text-red-500 uppercase tracking-widest">C2 Interception Logs</span>
+                </div>
+                <button 
+                  onClick={() => setC2Interceptions([])}
+                  className="text-[8px] sm:text-[10px] text-red-500/60 hover:text-red-500 uppercase"
+                >
+                  Clear Logs
+                </button>
+              </div>
+              <div className="p-3 sm:p-4 space-y-3 sm:space-y-4 max-h-[300px] overflow-y-auto custom-scrollbar">
+                {c2Interceptions.map((c2) => (
+                  <div key={c2.id} className="border-l-2 border-red-500/40 pl-3 sm:pl-4 py-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] sm:text-xs font-bold text-red-400 uppercase tracking-tighter">{c2.framework} Detected</span>
+                      <span className="text-[8px] sm:text-[10px] text-red-500/40 font-mono">{c2.timestamp}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[8px] sm:text-[10px] mb-2">
+                      <div>
+                        <span className="text-red-500/60 uppercase">Jitter:</span> <span className="text-red-300">{c2.jitter}</span>
+                      </div>
+                      <div>
+                        <span className="text-red-500/60 uppercase">Freq:</span> <span className="text-red-300">{c2.frequency}</span>
+                      </div>
+                    </div>
+                    <div className="text-[8px] sm:text-[10px] mb-2">
+                      <span className="text-red-500/60 uppercase block mb-0.5">Command Structure:</span>
+                      <code className="bg-black/40 px-1.5 py-0.5 rounded text-red-400/80 break-all">{c2.commandStructure}</code>
+                    </div>
+                    <div className="text-[8px] sm:text-[10px] mb-2">
+                      <span className="text-red-500/60 uppercase block mb-0.5">Redirection Strategy:</span>
+                      <span className="text-red-300/80 italic">{c2.redirectionStrategy}</span>
+                    </div>
+                    <div className="text-[8px] sm:text-[10px]">
+                      <span className="text-red-500/60 uppercase block mb-1">Infected Hosts ({c2.hosts.length}):</span>
+                      <div className="flex flex-wrap gap-1">
+                        {c2.hosts.map(host => (
+                          <span key={host} className="px-1.5 py-0.5 bg-red-500/10 border border-red-500/20 rounded text-red-400/60 text-[7px] sm:text-[8px]">
+                            {host}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
           {/* Threat Intel Panel */}
