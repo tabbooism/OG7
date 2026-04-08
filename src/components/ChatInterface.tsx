@@ -66,6 +66,8 @@ export default function ChatInterface() {
   const [isForceMode, setIsForceMode] = useState(false);
   const [autoSaveInterval, setAutoSaveInterval] = useState(30); // in seconds
   const [lastSaved, setLastSaved] = useState<string | null>(null);
+  const [isIpTrackingActive, setIsIpTrackingActive] = useState(false);
+  const [ipTrackingStatus, setIpTrackingStatus] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const saveAllState = () => {
@@ -92,6 +94,50 @@ export default function ChatInterface() {
     
     return () => clearInterval(timer);
   }, [autoSaveInterval, messages, threatIntel, c2Interceptions, targetProfile, isOpsLocked, isForceMode, targetDomain]);
+
+  // Periodic IP Tracking
+  useEffect(() => {
+    if (!isIpTrackingActive || !targetDomain) return;
+
+    const fetchIps = async () => {
+      setIpTrackingStatus('Resolving...');
+      try {
+        // In a real environment, this would hit a backend service that performs DNS resolution.
+        // Here we simulate it by asking the AI to resolve it, or simulating a response.
+        const prompt = `Perform a DNS A record lookup for ${targetDomain} and any known subdomains. Return ONLY a JSON array of IP address strings. Example: ["192.168.1.1", "10.0.0.1"]`;
+        
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json"
+          }
+        });
+
+        if (response.text) {
+          const newIps = JSON.parse(response.text);
+          if (Array.isArray(newIps)) {
+            setTargetProfile(prev => {
+              const combined = new Set([...prev.ips, ...newIps]);
+              return { ...prev, ips: Array.from(combined) };
+            });
+            setIpTrackingStatus(`Updated ${new Date().toLocaleTimeString()}`);
+          }
+        }
+      } catch (error) {
+        console.error("IP Tracking failed:", error);
+        setIpTrackingStatus('Error');
+      }
+    };
+
+    // Initial fetch
+    fetchIps();
+
+    // Set up interval (e.g., every 60 seconds)
+    const interval = setInterval(fetchIps, 60000);
+
+    return () => clearInterval(interval);
+  }, [isIpTrackingActive, targetDomain]);
 
   // Persistence: Load current session on mount
   useEffect(() => {
@@ -1146,6 +1192,23 @@ export default function ChatInterface() {
                 <span className="text-[10px] sm:text-xs font-bold text-green-500 uppercase tracking-widest">Target Profile: {targetDomain}</span>
               </div>
               <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 border-r border-green-500/20 pr-3 mr-1">
+                  <button
+                    onClick={() => setIsIpTrackingActive(!isIpTrackingActive)}
+                    className={cn(
+                      "flex items-center gap-1 text-[8px] sm:text-[10px] uppercase transition-colors",
+                      isIpTrackingActive ? "text-green-400" : "text-green-500/40 hover:text-green-500/80"
+                    )}
+                  >
+                    <Activity className={cn("w-2.5 h-2.5", isIpTrackingActive && "animate-pulse")} />
+                    {isIpTrackingActive ? "Tracking IPs" : "Track IPs"}
+                  </button>
+                  {isIpTrackingActive && ipTrackingStatus && (
+                    <span className="text-[7px] sm:text-[8px] text-green-500/50 italic">
+                      ({ipTrackingStatus})
+                    </span>
+                  )}
+                </div>
                 <button 
                   onClick={triggerAutoPopulateProfile}
                   disabled={isLoading || messages.length === 0}
